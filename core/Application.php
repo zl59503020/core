@@ -40,6 +40,7 @@ use OC\Core\Controller\TwoFactorChallengeController;
 use OC\Core\Controller\UserController;
 use OC_Defaults;
 use OCP\AppFramework\App;
+use OCP\IServerContainer;
 use OCP\Util;
 
 /**
@@ -86,6 +87,8 @@ class Application extends App {
 			);
 		});
 		$container->registerService('AvatarController', function(SimpleContainer $c) {
+			/** @var IServerContainer $server */
+			$server = $c->query('ServerContainer');
 			return new AvatarController(
 				$c->query('AppName'),
 				$c->query('Request'),
@@ -94,7 +97,7 @@ class Application extends App {
 				$c->query('L10N'),
 				$c->query('UserManager'),
 				$c->query('UserSession'),
-				$c->query('UserFolder'),
+				$server->getRootFolder(),
 				$c->query('Logger')
 			);
 		});
@@ -168,9 +171,6 @@ class Application extends App {
 		});
 		$container->registerService('Cache', function(SimpleContainer $c) {
 			return $c->query('ServerContainer')->getCache();
-		});
-		$container->registerService('UserFolder', function(SimpleContainer $c) {
-			return $c->query('ServerContainer')->getUserFolder();
 		});
 		$container->registerService('Defaults', function() {
 			return new OC_Defaults;
