@@ -238,5 +238,4 @@ class AccountMapper extends Mapper {
 
 		$stmt->closeCursor();
 	}
-
 }

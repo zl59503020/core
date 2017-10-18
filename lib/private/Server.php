@@ -88,6 +88,7 @@ use OC\Theme\ThemeService;
 use OC\User\AccountMapper;
 use OC\User\AccountTermMapper;
 use OC\Group\GroupMapper;
+use OC\MembershipManager;
 use OCP\IL10N;
 use OCP\ILogger;
 use OCP\IServerContainer;
@@ -103,6 +104,7 @@ use OC\Files\External\Service\GlobalStoragesService;
 use OC\Files\External\Service\DBConfigService;
 use OC\Http\Client\WebDavClientService;
 use Symfony\Component\EventDispatcher\GenericEvent;
+use \OCP\AppFramework\Utility\ITimeFactory;
 
 /**
  * Class Server
@@ -232,11 +234,17 @@ class Server extends ServerContainer implements IServerContainer {
 				return $c->getRootFolder();
 			});
 		});
+		$this->registerService('AccountTermMapper', function(Server $c) {
+			return new AccountTermMapper($c->getDatabaseConnection());
+		});
 		$this->registerService('AccountMapper', function(Server $c) {
-			return new AccountMapper($c->getConfig(), $c->getDatabaseConnection(), new AccountTermMapper($c->getDatabaseConnection()));
+			return new AccountMapper($c->getConfig(), $c->getDatabaseConnection(), $this->getAccountTermMapper());
 		});
 		$this->registerService('GroupMapper', function(Server $c) {
 			return new GroupMapper($c->getDatabaseConnection());
+		});
+		$this->registerService('MembershipManager', function(Server $c) {
+			return new MembershipManager($c->getDatabaseConnection(), $c->getConfig());
 		});
 		$this->registerService('UserManager', function (Server $c) {
 			$config = $c->getConfig();
@@ -609,13 +617,13 @@ class Server extends ServerContainer implements IServerContainer {
 			}
 
 			return new Checker(
-					new EnvironmentHelper(),
-					new FileAccessHelper(),
-					new AppLocator(),
-					$config,
-					$c->getMemCacheFactory(),
-					$appManager,
-					$c->getTempManager()
+				new EnvironmentHelper(),
+				new FileAccessHelper(),
+				new AppLocator(),
+				$config,
+				$c->getMemCacheFactory(),
+				$appManager,
+				$c->getTempManager()
 			);
 		});
 		$this->registerService('Request', function ($c) {
@@ -988,6 +996,20 @@ class Server extends ServerContainer implements IServerContainer {
 	 */
 	public function getUserManager() {
 		return $this->query('UserManager');
+	}
+
+	/**
+	 * @return \OC\MembershipManager
+	 */
+	public function getMembershipManager() {
+		return $this->query('MembershipManager');
+	}
+
+	/**
+	 * @return \OC\User\AccountTermMapper
+	 */
+	public function getAccountTermMapper() {
+		return $this->query('AccountTermMapper');
 	}
 
 	/**
