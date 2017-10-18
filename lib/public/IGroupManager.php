@@ -144,13 +144,13 @@ interface IGroupManager {
 	public function isAdmin($userId);
 
 	/**
-	 * Checks if a userId is in a group
+	 * Checks if a userId is in a group identified by gid
 	 * @param string $userId
-	 * @param string $group
+	 * @param string $gid
 	 * @return bool if in group
 	 * @since 8.0.0
 	 */
-	public function isInGroup($userId, $group);
+	public function isInGroup($userId, $gid);
 
 	/**
 	 * Returns the sub admin manager
@@ -159,5 +159,12 @@ interface IGroupManager {
 	 * @return ISubAdminManager
 	 */
 	public function getSubAdmin();
-}
 
+	/**
+	 * @param string $gid
+	 * @param GroupInterface $backend
+	 * @return IGroup|null
+	 * @since 10.0
+	 */
+	public function createGroupFromBackend($gid, $backend);
+}

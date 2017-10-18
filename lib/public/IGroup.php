@@ -30,6 +30,15 @@ namespace OCP;
  * @since 8.0.0
  */
 interface IGroup {
+
+	/**
+	 * get the groups's unique internal id
+	 *
+	 * @return int
+	 * @since 10.0
+	 */
+	public function getID();
+
 	/**
 	 * @return string
 	 * @since 8.0.0
@@ -120,7 +129,16 @@ interface IGroup {
 	 * Returns the backend for this group
 	 *
 	 * @return \OC\Group\Backend
+	 * @deprecated 10.0.0 use getBackendClassName() of \OCP\IGroup
 	 * @since 10.0.0
 	 */
 	public function getBackend();
+
+	/**
+	 * Returns the backend class for this group
+	 *
+	 * @return string
+	 * @since 10.0.0
+	 */
+	public function getBackendClassName();
 }

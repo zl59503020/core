@@ -34,6 +34,14 @@ namespace OCP;
 interface IUser {
 
 	/**
+	 * get the user's unique internal id
+	 *
+	 * @return int
+	 * @since 10.0
+	 */
+	public function getID();
+
+	/**
 	 * get the user id
 	 *
 	 * @return string

@@ -53,18 +53,22 @@ class GroupMapper extends Mapper {
 	}
 
 	/**
-	 * @param string $fieldName
 	 * @param string $pattern
 	 * @param integer $limit
 	 * @param integer $offset
 	 * @return BackendGroup[]
 	 */
-	public function search($fieldName, $pattern, $limit, $offset) {
+	public function search($pattern, $limit, $offset) {
 		$qb = $this->db->getQueryBuilder();
+		$parameter = '%' . $this->db->escapeLikeParameter($pattern) . '%';
 		$qb->select('*')
 			->from($this->getTableName())
-			->where($qb->expr()->iLike($fieldName, $qb->createNamedParameter('%' . $this->db->escapeLikeParameter($pattern) . '%')))
-			->orderBy($fieldName);
+			->where(
+				$qb->expr()->orX(
+					$qb->expr()->iLike('display_name', $qb->createNamedParameter($parameter)),
+					$qb->expr()->iLike('group_id', $qb->createNamedParameter($parameter))
+				))
+			->orderBy('display_name');
 
 		return $this->findEntities($qb->getSQL(), $qb->getParameters(), $limit, $offset);
 	}

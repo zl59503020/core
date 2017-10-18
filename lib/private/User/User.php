@@ -33,6 +33,7 @@ namespace OC\User;
 
 use OC\Files\Cache\Storage;
 use OC\Hooks\Emitter;
+use OC\MembershipManager;
 use OC_Helper;
 use OCP\IAvatarManager;
 use OCP\IImage;
@@ -67,21 +68,27 @@ class User implements IUser {
 	/** @var AccountMapper */
 	private $mapper;
 
+	/** @var MembershipManager */
+	private $membershipManager;
+
 	/**
 	 * User constructor.
 	 *
 	 * @param Account $account
 	 * @param AccountMapper $mapper
+	 * @param MembershipManager $membershipManager
 	 * @param null $emitter
 	 * @param IConfig|null $config
 	 * @param null $urlGenerator
 	 * @param EventDispatcher|null $eventDispatcher
 	 */
-	public function __construct(Account $account, AccountMapper $mapper, $emitter = null, IConfig $config = null,
+	public function __construct(Account $account, AccountMapper $mapper, MembershipManager $membershipManager,
+								$emitter = null, IConfig $config = null,
 								$urlGenerator = null, EventDispatcher $eventDispatcher = null
 	) {
 		$this->account = $account;
 		$this->mapper = $mapper;
+		$this->membershipManager = $membershipManager;
 		$this->emitter = $emitter;
 		$this->eventDispatcher = $eventDispatcher;
 		if(is_null($config)) {
@@ -92,6 +99,15 @@ class User implements IUser {
 		if (is_null($this->urlGenerator)) {
 			$this->urlGenerator = \OC::$server->getURLGenerator();
 		}
+	}
+
+	/**
+	 * get the user unique internal id
+	 *
+	 * @return string
+	 */
+	public function getID() {
+		return $this->account->getId();
 	}
 
 	/**
@@ -191,12 +207,8 @@ class User implements IUser {
 			$bi->deleteUser($this->account->getUserId());
 		}
 
-		// FIXME: Feels like an hack - suggestions?
+		$this->membershipManager->removeMemberships($this->getID());
 
-		// We have to delete the user from all groups
-		foreach (\OC::$server->getGroupManager()->getUserGroups($this) as $group) {
-			$group->removeUser($this);
-		}
 		// Delete the user's keys in preferences
 		\OC::$server->getConfig()->deleteAllUserValues($this->getUID());
 

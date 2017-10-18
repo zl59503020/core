@@ -39,11 +39,11 @@ namespace OC\Group;
 use OC\Hooks\PublicEmitter;
 use OCP\GroupInterface;
 use OCP\IGroupManager;
-use OC\Group\GroupMapper;
-use OC\Group\Database;
+use OC\User\Account;
 
 /**
- * Class Manager
+ * Class Group Manager. This class is responsible for access to the \OC\Group\Group
+ * classes and their caching, providing optimal access.
  *
  * Hooks available in scope \OC\Group:
  * - preAddUser(\OC\Group\Group $group, \OC\User\User $user)
@@ -58,16 +58,22 @@ use OC\Group\Database;
  * @package OC\Group
  */
 class Manager extends PublicEmitter implements IGroupManager {
-	/** @var GroupInterface[] $backends */
-	private $backends = [];
+	/** @var \OC\Group\Backend[] $externalBackends */
+	private $externalBackends = [];
+
+	/** @var \OC\Group\Backend $internalBackend */
+	private $internalBackend;
 
 	/** @var \OC\User\Manager $userManager */
 	private $userManager;
 
-	/** @var \OC\Group\Group[] */
+	/** @var \OC\MembershipManager $membershipManager */
+	private $membershipManager;
+
+	/** @var \OCP\IGroup[] */
 	private $cachedGroups = [];
 
-	/** @var \OC\Group\Group[] */
+	/** @var array - key is user id and value \OCP\IGroup[] */
 	private $cachedUserGroups = [];
 
 	/** @var \OC\SubAdmin */
@@ -76,12 +82,22 @@ class Manager extends PublicEmitter implements IGroupManager {
 	/** @var \OC\Group\GroupMapper */
 	private $groupMapper;
 
+	/** @var \OCP\IDBConnection */
+	private $db;
+
 	/**
 	 * @param \OC\User\Manager $userManager
+	 * @param \OC\MembershipManager $membershipManager
+	 * @param \OC\Group\GroupMapper $groupMapper
+	 * @param \OCP\IDBConnection $db
 	 */
-	public function __construct(\OC\User\Manager $userManager, \OC\Group\GroupMapper $groupMapper) {
+	public function __construct(\OC\User\Manager $userManager, \OC\MembershipManager $membershipManager, \OC\Group\GroupMapper $groupMapper, \OCP\IDBConnection $db) {
+		// Add database backend
+		$this->db = $db;
+		$this->internalBackend = new \OC\Group\Database($this->db);
 		$this->userManager = $userManager;
 		$this->groupMapper = $groupMapper;
+		$this->membershipManager = $membershipManager;
 		$cachedGroups = & $this->cachedGroups;
 		$cachedUserGroups = & $this->cachedUserGroups;
 		$this->listen('\OC\Group', 'postDelete', function ($group) use (&$cachedGroups, &$cachedUserGroups) {
@@ -112,72 +128,70 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @return bool
 	 */
 	public function isBackendUsed($backendClass) {
-		$backendClass = strtolower(ltrim($backendClass, '\\'));
-
-		foreach ($this->backends as $backend) {
-			if (strtolower(get_class($backend)) === $backendClass) {
-				return true;
-			}
-		}
-
-		return false;
+		return is_null($this->getBackend($backendClass));
 	}
 
 	/**
-	 * @param \OCP\GroupInterface $backend
+	 * Get the active backend with optional scope
+	 *
+	 * @param string $backendClass Full classname including complete namespace
+	 *
+	 * @return \OC\Group\Backend|null
+	 */
+	public function getBackend($backendClass) {
+		$backendClass = strtolower(ltrim($backendClass, '\\'));
+		foreach ($this->getBackends() as $backend) {
+			if ($this->getBackendClass($backend) === $backendClass) {
+				return $backend;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Get the active backends
+	 *
+	 * @return \OC\Group\Backend[]
+	 */
+	public function getBackends() {
+		$backends = [];
+		foreach ($this->externalBackends as $backend) {
+			$backends[] = $backend;
+		}
+
+		$backends[] = $this->internalBackend;
+		return $backends;
+	}
+
+	/**
+	 * @param \OC\Group\Backend $backend
 	 */
 	public function addBackend($backend) {
-		$this->backends[] = $backend;
+		$this->externalBackends[] = $backend;
 		$this->clearCaches();
 	}
 
 	public function clearBackends() {
-		$this->backends = [];
+		$this->externalBackends = [];
 		$this->clearCaches();
 	}
 
-	protected function clearCaches() {
-		$this->cachedGroups = [];
-		$this->cachedUserGroups = [];
-	}
-
 	/**
 	 * @param string $gid
-	 * @return \OC\Group\Group
+	 * @return \OCP\IGroup|null
 	 */
 	public function get($gid) {
-		if (isset($this->cachedGroups[$gid])) {
+		if ($this->isCached($gid)) {
 			return $this->cachedGroups[$gid];
 		}
-		return $this->getGroupObject($gid);
-	}
 
-	/**
-	 * @param string $gid
-	 * @param string $displayName
-	 * @return \OCP\IGroup
-	 */
-	protected function getGroupObject($gid, $displayName = null) {
-		$backends = [];
-		foreach ($this->backends as $backend) {
-			if ($backend->implementsActions(\OC\Group\Backend::GROUP_DETAILS)) {
-				$groupData = $backend->getGroupDetails($gid);
-				if (is_array($groupData)) {
-					// take the display name from the first backend that has a non-null one
-					if (is_null($displayName) && isset($groupData['displayName'])) {
-						$displayName = $groupData['displayName'];
-					}
-					$backends[] = $backend;
-				}
-			} else if ($backend->groupExists($gid)) {
-				$backends[] = $backend;
-			}
-		}
-		if (count($backends) === 0) {
+		$backendGroup = $this->groupMapper->getGroup($gid);
+		if (is_null($backendGroup)) {
 			return null;
 		}
-		$this->cachedGroups[$gid] = new Group($gid, $backends, $this->userManager, $this, $displayName);
-		return $this->cachedGroups[$gid];
+
+		return $this->getByBackendGroup($backendGroup);
 	}
 
 	/**
@@ -190,40 +204,58 @@ class Manager extends PublicEmitter implements IGroupManager {
 
 	/**
 	 * @param string $gid
-	 * @return \OC\Group\Group
+	 * @return \OCP\IGroup|null
 	 */
 	public function createGroup($gid) {
 		if ($gid === '' || is_null($gid)) {
-			return false;
+			return null;
 		} else if ($group = $this->get($gid)) {
 			return $group;
-		} else {
-			$this->emit('\OC\Group', 'preCreate', [$gid]);
-			foreach ($this->backends as $backend) {
-				if ($backend->implementsActions(\OC\Group\Backend::CREATE_GROUP)) {
-					$backend->createGroup($gid);
-					$group = $this->getGroupObject($gid);
-					$this->emit('\OC\Group', 'postCreate', [$group]);
-					return $group;
-				}
-			}
-			return null;
 		}
-	}
 
+		$createdGroup = $this->createGroupFromBackend($gid, $this->internalBackend);
+
+		if (!is_null($createdGroup)) {
+			$this->cachedGroups[$createdGroup->getId()] = $createdGroup;
+		}
+
+		return $createdGroup;
+	}
 
 	/**
 	 * @param string $gid
-	 * @param string $backendClass
-	 * @return BackendGroup|\OCP\AppFramework\Db\Entity
+	 * @param GroupInterface $backend
+	 * @return \OCP\IGroup|null
 	 */
-	private function createBackendGroup($gid, $backendClass) {
-		$account = new BackendGroup();
-		$account->setGroupId($gid);
-		$account->setDisplayName($gid);
-		$account->setBackend($backendClass);
-		$account = $this->groupMapper->insert($account);
-		return $account;
+	public function createGroupFromBackend($gid, $backend) {
+		// Create new backend group, set group id, displayname and backend class
+		// Group manager is capable of creating users only in internal backend
+		$backendGroup = new BackendGroup();
+		$backendGroup->setGroupId($gid);
+		$backendGroup->setDisplayName($gid);
+		$backendGroup->setBackend($this->getBackendClass($backend));
+
+
+		// Create group in the external and internal backend services
+		$this->emit('\OC\Group', 'preCreate', [$gid]);
+
+		// Check if it is possible to create group in the given backend
+		if ($backend->implementsActions(\OC\Group\Backend::CREATE_GROUP)) {
+			// Add group to internal group backend
+			$result = $backend->createGroup($gid);
+			if ($result) {
+				// Add group internally
+				$this->groupMapper->insert($backendGroup);
+
+				// Retrieve group object for newly created backend group
+				$group = $this->getByBackendGroup($backendGroup);
+
+				// Emit post create
+				$this->emit('\OC\Group', 'postCreate', [$group]);
+				return $group;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -231,105 +263,44 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @param int|null $limit limit
 	 * @param int|null $offset offset
 	 * @param string|null $scope scope string
-	 * @return \OC\Group\Group[] groups
+	 * @return \OCP\IGroup[] groups
 	 */
 	public function search($search, $limit = null, $offset = null, $scope = null) {
-		$groups = [];
-		foreach ($this->backends as $backend) {
-			if (!$backend->isVisibleForScope($scope)) {
-				// skip backend
-				continue;
-			}
-			$groupIds = $backend->getGroups($search, $limit, $offset);
-			foreach ($groupIds as $groupId) {
-				$aGroup = $this->get($groupId);
-				if (!is_null($aGroup)) {
-					$groups[$groupId] = $aGroup;
-				} else {
-					\OC::$server->getLogger()->debug('Group "' . $groupId . '" was returned by search but not found through direct access', array('app' => 'core'));
-				}
-			}
-			if (!is_null($limit) and $limit <= 0) {
-				return array_values($groups);
-			}
-		}
-		return array_values($groups);
+		// Search for backend groups matching pattern and convert to \OCP\IGroup
+		$backendGroups = $this->groupMapper->search($search, $limit, $offset);
+		$groups =  array_map(function($backendGroup) {
+			// Get Group object for each backend group and cache
+			return $this->getByBackendGroup($backendGroup);
+		}, $backendGroups);
+
+		// Filter groups for exluded backends in the scope and return group id for each group.
+		return $this->filterExcludedBackendsForScope($groups, $scope);
 	}
 
 	/**
 	 * @param \OC\User\User|null $user user
 	 * @param string|null $scope scope string
-	 * @return \OC\Group\Group[]
+	 * @return \OCP\IGroup[]
 	 */
 	public function getUserGroups($user, $scope = null) {
-		if (is_null($user)) {
-			return [];
-		}
-		return $this->getUserIdGroups($user->getUID(), $scope);
-	}
+		/** @var Group[] $groupsForUser */
+		$groupsForUser = $this->getUserGroupsCached($user);
 
-	/**
-	 * Gathers a list of backends that opt out of the given scope.
-	 *
-	 * @param string|null $scope scope string
-	 * @return \OCP\GroupInterface[] excluded backends
-	 */
-	private function getExcludedBackendsForScope($scope) {
-		$excludedBackendsForScope = [];
-		foreach ($this->backends as $backend) {
-			if (!$backend->isVisibleForScope($scope)) {
-				$excludedBackendsForScope[] = $backend;
-			}
-		}
-		return $excludedBackendsForScope;
-	}
-
-	/**
-	 * Filter groups by backends that opt-out of the given scope
-	 *
-	 * @param \OCP\IGroup[] $groups groups to filter
-	 * @param string|null $scope scope string
-	 * @return \OCP\IGroup[] filtered groups
-	 */
-	private function filterExcludedBackendsForScope($groups, $scope) {
-		$excludedBackendsForScope = $this->getExcludedBackendsForScope($scope);
-		if (!empty($excludedBackendsForScope)) {
-			return array_filter($groups, function($group) use ($excludedBackendsForScope) {
-				return !in_array($group->getBackend(), $excludedBackendsForScope);
-			});
-		}
-		return $groups;
+		// Filter groups for exluded backends in the scope and return group id for each group.
+		return $this->filterExcludedBackendsForScope($groupsForUser, $scope);
 	}
 
 	/**
 	 * @param string $uid the user id
 	 * @param string|null $scope scope string
-	 * @return \OC\Group\Group[]
+	 * @return \OCP\IGroup[]
 	 */
 	public function getUserIdGroups($uid, $scope = null) {
-		if (!isset($this->cachedUserGroups[$uid])) {
-			$groups = [];
+		/** @var Group[] $groupsForUser */
+		$groupsForUser = $this->getUserIdGroupsCached($uid);
 
-			foreach ($this->backends as $backend) {
-				$groupIds = $backend->getUserGroups($uid);
-				if (is_array($groupIds)) {
-					foreach ($groupIds as $groupId) {
-						$aGroup = $this->get($groupId);
-						if (!is_null($aGroup)) {
-							$groups[$groupId] = $aGroup;
-						} else {
-							\OC::$server->getLogger()->debug('User "' . $uid . '" belongs to deleted group: "' . $groupId . '"', array('app' => 'core'));
-						}
-					}
-				}
-			}
-			$this->cachedUserGroups[$uid] = $groups;
-		} else {
-			$groups = $this->cachedUserGroups[$uid];
-		}
-
-		// filter out groups that must be omitted for the given scope
-		return $this->filterExcludedBackendsForScope($groups, $scope);
+		// Filter groups for exluded backends in the scope and return group id for each group.
+		return $this->filterExcludedBackendsForScope($groupsForUser, $scope);
 	}
 
 	/**
@@ -338,17 +309,17 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @return bool if admin
 	 */
 	public function isAdmin($userId) {
-		return $this->isInGroup($userId, 'admin');
+		return $this->membershipManager->isGroupUser($userId, 'admin');
 	}
 
 	/**
-	 * Checks if a userId is in a group
+	 * Checks if a userId is in a group identified by gid
 	 * @param string $userId
-	 * @param string $group
+	 * @param string $gid
 	 * @return bool if in group
 	 */
-	public function isInGroup($userId, $group) {
-		return array_key_exists($group, $this->getUserIdGroups($userId));
+	public function isInGroup($userId, $gid) {
+		return $this->membershipManager->isGroupUser($userId, $gid);
 	}
 
 	/**
@@ -358,9 +329,14 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @return array with group ids
 	 */
 	public function getUserGroupIds($user, $scope = null) {
-		return array_map(function($value) {
-			return (string) $value;
-		}, array_keys($this->getUserGroups($user, $scope)));
+		/** @var \OCP\IGroup[] $groupsForUser */
+		$groupsForUser = $this->getUserGroupsCached($user);
+
+		// Filter groups for exluded backends in the scope and return group id for each group.
+		return array_map(function($group) {
+			/** @var Group $group */
+			return $group->getGID();
+		}, $this->filterExcludedBackendsForScope($groupsForUser, $scope));
 	}
 
 	/**
@@ -369,54 +345,24 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @param string $search
 	 * @param int $limit
 	 * @param int $offset
-	 * @return \OC\User\User[]
+	 * @return \OCP\IUser[]
 	 */
 	public function findUsersInGroup($gid, $search = '', $limit = -1, $offset = 0) {
-		$group = $this->get($gid);
-		if(is_null($group)) {
-			return [];
-		}
-
-		$search = trim($search);
-		$groupUsers = [];
-
-		if(!empty($search)) {
-			// only user backends have the capability to do a complex search for users
-			$searchOffset = 0;
-			$searchLimit = $limit * 100;
-			if($limit === -1) {
-				$searchLimit = 500;
-			}
-
-			do {
-				$filteredUsers = $this->userManager->find($search, $searchLimit, $searchOffset);
-				foreach($filteredUsers as $filteredUser) {
-					if($group->inGroup($filteredUser)) {
-						$groupUsers[]= $filteredUser;
-					}
-				}
-				$searchOffset += $searchLimit;
-			} while(count($groupUsers) < $searchLimit+$offset && count($filteredUsers) >= $searchLimit);
-
-			if($limit === -1) {
-				$groupUsers = array_slice($groupUsers, $offset);
-			} else {
-				$groupUsers = array_slice($groupUsers, $offset, $limit);
-			}
-		} else {
-			$groupUsers = $group->searchUsers('', $limit, $offset);
-		}
+		/** @var Account[] $accounts */
+		$accounts = $this->membershipManager->find($gid, $search, $limit, $offset);
 
 		$matchingUsers = [];
-		foreach($groupUsers as $groupUser) {
-			$matchingUsers[$groupUser->getUID()] = $groupUser;
+		foreach($accounts as $account) {
+			$matchingUsers[$account->getUserId()] = $this->userManager->getByAccount($account);
 		}
 
 		return $matchingUsers;
 	}
 
 	/**
-	 * get a list of all display names in a group
+	 * Get a list of all display names in a group identified by $gid,
+	 * which satisfy search predicate
+	 *
 	 * @param string $gid
 	 * @param string $search
 	 * @param int $limit
@@ -424,44 +370,12 @@ class Manager extends PublicEmitter implements IGroupManager {
 	 * @return array an array of display names (value) and user ids (key)
 	 */
 	public function displayNamesInGroup($gid, $search = '', $limit = -1, $offset = 0) {
-		$group = $this->get($gid);
-		if(is_null($group)) {
-			return [];
-		}
-
-		$search = trim($search);
-		$groupUsers = [];
-
-		if(!empty($search)) {
-			// only user backends have the capability to do a complex search for users
-			$searchOffset = 0;
-			$searchLimit = $limit * 100;
-			if($limit === -1) {
-				$searchLimit = 500;
-			}
-
-			do {
-				$filteredUsers = $this->userManager->searchDisplayName($search, $searchLimit, $searchOffset);
-				foreach($filteredUsers as $filteredUser) {
-					if($group->inGroup($filteredUser)) {
-						$groupUsers[]= $filteredUser;
-					}
-				}
-				$searchOffset += $searchLimit;
-			} while(count($groupUsers) < $searchLimit+$offset && count($filteredUsers) >= $searchLimit);
-
-			if($limit === -1) {
-				$groupUsers = array_slice($groupUsers, $offset);
-			} else {
-				$groupUsers = array_slice($groupUsers, $offset, $limit);
-			}
-		} else {
-			$groupUsers = $group->searchUsers('', $limit, $offset);
-		}
+		/** @var Account[] $accounts */
+		$accounts = $this->membershipManager->find($gid, $search, $limit, $offset);
 
 		$matchingUsers = [];
-		foreach($groupUsers as $groupUser) {
-			$matchingUsers[$groupUser->getUID()] = $groupUser->getDisplayName();
+		foreach($accounts as $account) {
+			$matchingUsers[$account->getUserId()] = $account->getDisplayName();
 		}
 		return $matchingUsers;
 	}
@@ -474,19 +388,101 @@ class Manager extends PublicEmitter implements IGroupManager {
 			$this->subAdmin = new \OC\SubAdmin(
 				$this->userManager,
 				$this,
-				\OC::$server->getDatabaseConnection()
+				$this->membershipManager,
+				$this->db
 			);
 		}
 
 		return $this->subAdmin;
 	}
 
-	public function inGroup($uid, $gid) {
-		$group = $this->get($gid);
-		$user = $this->userManager->get($uid);
-		if ($group and $user) {
-			return $group->inGroup($user);
+	/**
+	 * @param BackendGroup $backendGroup
+	 * @return \OCP\IGroup
+	 */
+	public function getByBackendGroup($backendGroup) {
+		$gid = $backendGroup->getGroupId();
+		if (!$this->isCached($gid)) {
+			$this->cachedGroups[$gid] = new Group($backendGroup, $this->groupMapper, $this, $this->userManager, $this->membershipManager);
+		}
+		return $this->cachedGroups[$gid];
+	}
+
+	protected function clearCaches() {
+		$this->cachedGroups = [];
+		$this->cachedUserGroups = [];
+	}
+
+	/**
+	 * @param string $gid
+	 * @return boolean
+	 */
+	protected function isCached($gid) {
+		if (isset($this->cachedGroups[$gid])) {
+			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * @param \OCP\GroupInterface $backend
+	 */
+	private function getBackendClass($backend) {
+		return strtolower(get_class($backend));
+	}
+	/**
+	 * get a list of group ids for a user
+	 * @param \OC\User\User|null $user
+	 * @return \OCP\IGroup[]
+	 */
+	private function getUserGroupsCached($user) {
+		if (is_null($user)) {
+			return [];
+		}
+
+		if (!isset($this->cachedUserGroups[$user->getUID()])) {
+			// Retrieve backend groups for specific user's account internal id
+			$accountId = $user->getID();
+			$this->cachedUserGroups[$user->getUID()] = array_map(function($backendGroup) {
+				// Get \OCP\IGroup object for each backend group and cache
+				return $this->getByBackendGroup($backendGroup);
+			}, $this->membershipManager->getUserBackendGroupsById($accountId));
+		}
+
+		return $this->cachedUserGroups[$user->getUID()];
+	}
+
+	/**
+	 * get a list of group ids for a user
+	 * @param string $userId
+	 * @return Group[]
+	 */
+	private function getUserIdGroupsCached($userId) {
+		if (!isset($this->cachedUserGroups[$userId])) {
+			// Retrieve backend groups for user id
+			$this->cachedUserGroups[$userId] = array_map(function($backendGroup) {
+				// Get Group object for each backend group and cache
+				return $this->getByBackendGroup($backendGroup);
+			}, $this->membershipManager->getUserBackendGroups($userId));
+		}
+
+		return $this->cachedUserGroups[$userId];
+	}
+
+	/**
+	 * Filter groups by backends that opt-out of the given scope
+	 *
+	 * @param \OCP\IGroup[] $groups groups to filter
+	 * @param string|null $scope scope string
+	 * @return \OCP\IGroup[] filtered groups
+	 */
+	private function filterExcludedBackendsForScope($groups, $scope) {
+		return array_filter($groups, function($group) use ($scope) {
+			/** @var \OCP\IGroup $group */
+			if ($backend = $this->getBackend($group->getBackendClassName())){
+				return $backend->isVisibleForScope($scope);
+			}
+			return false;
+		});
 	}
 }

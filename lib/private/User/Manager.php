@@ -44,9 +44,12 @@ use OCP\User\IProvidesEMailBackend;
 use OCP\User\IProvidesQuotaBackend;
 use OCP\UserInterface;
 use Symfony\Component\EventDispatcher\GenericEvent;
+use OC\MembershipManager;
 
 /**
- * Class Manager
+ * Class User Manager. This class is responsible for access to the \OC\User\User
+ * classes and their caching, providing optimal access.
+ *
  *
  * Hooks available in scope \OC\User:
  * - preSetPassword(\OC\User\User $user, string $password, string $recoverPassword)
@@ -75,15 +78,20 @@ class Manager extends PublicEmitter implements IUserManager {
 	/** @var AccountMapper */
 	private $accountMapper;
 
+	/** @var MembershipManager */
+	private $membershipManager;
+
 	/**
 	 * @param IConfig $config
 	 * @param ILogger $logger
 	 * @param AccountMapper $accountMapper
+	 * @param MembershipManager $membershipManager
 	 */
-	public function __construct(IConfig $config, ILogger $logger, AccountMapper $accountMapper) {
+	public function __construct(IConfig $config, ILogger $logger, AccountMapper $accountMapper, MembershipManager $membershipManager) {
 		$this->config = $config;
 		$this->logger = $logger;
 		$this->accountMapper = $accountMapper;
+		$this->membershipManager = $membershipManager;
 		$cachedUsers = &$this->cachedUsers;
 		$this->listen('\OC\User', 'postDelete', function ($user) use (&$cachedUsers) {
 			/** @var \OC\User\User $user */
@@ -142,13 +150,24 @@ class Manager extends PublicEmitter implements IUserManager {
 	}
 
 	/**
+	 * @param string $uid
+	 * @return boolean
+	 */
+	protected function isCached($uid) {
+		if (isset($this->cachedUsers[$uid])) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * get a user by user id
 	 *
 	 * @param string $uid
 	 * @return \OC\User\User|null Either the user or null if the specified user does not exist
 	 */
 	public function get($uid) {
-		if (isset($this->cachedUsers[$uid])) { //check the cache first to prevent having to loop over the backends
+		if ($this->isCached($uid)) { //check the cache first to prevent having to loop over the backends
 			return $this->cachedUsers[$uid];
 		}
 		if (is_null($uid)){
@@ -159,28 +178,27 @@ class Manager extends PublicEmitter implements IUserManager {
 			if (is_null($account)) {
 				return null;
 			}
-			return $this->getUserObject($account);
+			return $this->getByAccount($account);
 		} catch (DoesNotExistException $ex) {
 			return null;
 		}
 	}
 
 	/**
-	 * get or construct the user object
+	 * Get or construct the user object for given account.
+	 *
+	 * NOTE: This function is not defined in the interface and is only available in the core scope
 	 *
 	 * @param Account $account
-	 * @param bool $cacheUser If false the newly created user object will not be cached
 	 * @return \OC\User\User
 	 */
-	protected function getUserObject(Account $account, $cacheUser = true) {
-		if (isset($this->cachedUsers[$account->getUserId()])) {
+	public function getByAccount(Account $account) {
+		if ($this->isCached($account->getUserId())) {
 			return $this->cachedUsers[$account->getUserId()];
 		}
 
-		$user = new User($account, $this->accountMapper, $this, $this->config, null, \OC::$server->getEventDispatcher() );
-		if ($cacheUser) {
-			$this->cachedUsers[$account->getUserId()] = $user;
-		}
+		$user = new User($account, $this->accountMapper, $this->membershipManager, $this, $this->config, null, \OC::$server->getEventDispatcher() );
+		$this->cachedUsers[$account->getUserId()] = $user;
 		return $user;
 	}
 
@@ -220,7 +238,7 @@ class Manager extends PublicEmitter implements IUserManager {
 						$account = $this->newAccount($uid, $backend);
 					}
 					// TODO always sync account with backend here to update displayname, email, search terms, home etc. user_ldap currently updates user metadata on login, core should take care of updating accounts on a successful login
-					return $this->getUserObject($account);
+					return $this->getByAccount($account);
 				}
 			}
 		}
@@ -241,7 +259,7 @@ class Manager extends PublicEmitter implements IUserManager {
 		$accounts = $this->accountMapper->search('user_id', $pattern, $limit, $offset);
 		$users = [];
 		foreach ($accounts as $account) {
-			$user = $this->getUserObject($account);
+			$user = $this->getByAccount($account);
 			$users[$user->getUID()] = $user;
 		}
 
@@ -260,7 +278,7 @@ class Manager extends PublicEmitter implements IUserManager {
 		$accounts = $this->accountMapper->find($pattern, $limit, $offset);
 		$users = [];
 		foreach ($accounts as $account) {
-			$user = $this->getUserObject($account);
+			$user = $this->getByAccount($account);
 			$users[$user->getUID()] = $user;
 		}
 		return $users;
@@ -277,7 +295,7 @@ class Manager extends PublicEmitter implements IUserManager {
 	public function searchDisplayName($pattern, $limit = null, $offset = null) {
 		$accounts = $this->accountMapper->search('display_name', $pattern, $limit, $offset);
 		return array_map(function(Account $account) {
-			return $this->getUserObject($account);
+			return $this->getByAccount($account);
 		}, $accounts);
 	}
 
@@ -333,7 +351,7 @@ class Manager extends PublicEmitter implements IUserManager {
 			if ($backend->implementsActions(Backend::CREATE_USER)) {
 				$backend->createUser($uid, $password);
 				$account = $this->newAccount($uid, $backend);
-				$user = $this->getUserObject($account);
+				$user = $this->getByAccount($account);
 				$this->emit('\OC\User', 'postCreateUser', [$user, $password]);
 				return $user;
 			}
@@ -349,7 +367,7 @@ class Manager extends PublicEmitter implements IUserManager {
 	public function createUserFromBackend($uid, $password, $backend) {
 		$this->emit('\OC\User', 'preCreateUser', [$uid, '']);
 		$account = $this->newAccount($uid, $backend);
-		$user = $this->getUserObject($account);
+		$user = $this->getByAccount($account);
 		$this->emit('\OC\User', 'postCreateUser', [$user, $password]);
 		return $user;
 	}
@@ -381,7 +399,7 @@ class Manager extends PublicEmitter implements IUserManager {
 	 */
 	public function callForAllUsers(\Closure $callback, $search = '', $onlySeen = false) {
 		$this->accountMapper->callForAllUsers(function (Account $account) use ($callback) {
-			$user = $this->getUserObject($account);
+			$user = $this->getByAccount($account);
 			return $callback($user);
 		}, $search, $onlySeen);
 	}
@@ -415,7 +433,7 @@ class Manager extends PublicEmitter implements IUserManager {
 		}
 		$accounts = $this->accountMapper->getByEmail($email);
 		return array_map(function(Account $account) {
-			return $this->getUserObject($account);
+			return $this->getByAccount($account);
 		}, $accounts);
 	}
 
