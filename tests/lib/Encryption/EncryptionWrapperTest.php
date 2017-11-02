@@ -54,6 +54,7 @@ class EncryptionWrapperTest extends TestCase {
 
 	/**
 	 * @dataProvider provideWrapStorage
+	 * @group DB
 	 */
 	public function testWrapStorage($expectedWrapped, $wrappedStorages) {
 		$storage = $this->getMockBuilder('OC\Files\Storage\Storage')

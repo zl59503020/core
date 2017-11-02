@@ -27,6 +27,9 @@ class ManagerTest extends \Test\TestCase {
 		$this->manager = new \OC\Files\Mount\Manager();
 	}
 
+	/**
+	 * @group DB
+	 */
 	public function testFind() {
 		$this->assertNull($this->manager->find('/'));
 
@@ -54,6 +57,9 @@ class ManagerTest extends \Test\TestCase {
 		$this->assertEquals([$mount1, $mount3], $this->manager->findByStorageId($id));
 	}
 
+	/**
+	 * @group DB
+	 */
 	public function testLong() {
 		$storage = new LongId([]);
 		$mount = new \OC\Files\Mount\MountPoint($storage, '/foo');
