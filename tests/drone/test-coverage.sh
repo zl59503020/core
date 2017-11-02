@@ -44,7 +44,7 @@ fi
 ./occ app:enable federation
 ./occ app:enable federatedfilesharing
 
-if [[ "${DB_TYPE}" == "none" ]]; then
+if [[ "${DB_TYPE}" == "none" || "${DB_TYPE}" == "sqlite" ]]; then
   GROUP="--exclude-group DB"
 else
   GROUP="--group DB"
