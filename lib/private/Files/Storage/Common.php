@@ -692,10 +692,10 @@ abstract class Common implements Storage, ILockingStorage, IVersionedStorage {
 		if (!\OC_App::isEnabled('files_versions')) {
 			return [];
 		}
-		$p = $this->convertInternalPathToGlobalPath($internalPath);
+		list ($uid, $filename) = \OCA\Files_Versions\Storage::getUidAndFilename($internalPath);
 
 		return array_values(
-			\OCA\Files_Versions\Storage::getVersions($this->getOwner($internalPath), $p));
+			\OCA\Files_Versions\Storage::getVersions($uid, $filename));
 	}
 
 	public function getVersion($internalPath, $versionId) {
@@ -708,7 +708,7 @@ abstract class Common implements Storage, ILockingStorage, IVersionedStorage {
 
 	public function getContentOfVersion($internalPath, $versionId) {
 		$v = $this->getVersion($internalPath, $versionId);
-		return $this->fopen($v['storage_location'], 'r');
+		return \OCA\Files_Versions\Storage::getContentOfVersion($v['owner'], $v['storage_location']);
 	}
 
 	public function restoreVersion($internalPath, $versionId) {
@@ -716,21 +716,7 @@ abstract class Common implements Storage, ILockingStorage, IVersionedStorage {
 		if (!\OC_App::isEnabled('files_versions')) {
 			return;
 		}
-		$p = $this->convertInternalPathToGlobalPath($internalPath);
-		\OCA\Files_Versions\Storage::rollback($p, $versionId);
-	}
-
-	/**
-	 * @param $internalPath
-	 * @return array|string
-	 */
-	private function convertInternalPathToGlobalPath($internalPath) {
-		$mount = \OC::$server->getMountManager()->findByStorageId($this->getId());
-		$p = $mount[0]->getMountPoint() . $internalPath;
-		$p = explode('/', ltrim($p, '/'));
-		array_shift($p);
-		array_shift($p);
-		$p = implode('/', $p);
-		return $p;
+		list ($uid, $filename) = \OCA\Files_Versions\Storage::getUidAndFilename($internalPath);
+		\OCA\Files_Versions\Storage::rollback($filename, $versionId);
 	}
 }
